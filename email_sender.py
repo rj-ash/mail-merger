@@ -34,7 +34,6 @@ class EmailSender:
 
     async def send_emails(self, email_payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Send all emails in batches concurrently."""
-        results = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Create batches
@@ -48,19 +47,12 @@ class EmailSender:
             tasks = [self.send_email_batch(session, batch) for batch in batches]
             
             # Execute all tasks concurrently
-            batch_results = await asyncio.gather(*tasks)
-            
-            # Flatten results
-            for batch_result in batch_results:
-                results.extend(batch_result)
+            await asyncio.gather(*tasks)
         
-        # Return results directly without saving to file
+        # Return only total emails count
         return {
             "timestamp": timestamp,
-            "total_emails": len(email_payloads),
-            "successful_sends": sum(1 for r in results if "error" not in r),
-            "failed_sends": sum(1 for r in results if "error" in r),
-            "results": results
+            "total_emails": len(email_payloads)
         }
 
 def prepare_email_payloads(generated_emails: List[Dict[str, Any]], enriched_data: pd.DataFrame = None) -> List[Dict[str, Any]]:

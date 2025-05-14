@@ -9,7 +9,6 @@ import asyncio
 import json
 import PyPDF2
 import io
-import os
 import dotenv
 
 # Load environment variables
@@ -617,28 +616,10 @@ with tab4:
         if st.session_state.email_sending_completed and st.session_state.email_sending_results:
             results = st.session_state.email_sending_results
             
-            st.subheader("Email Sending Results")
+            st.subheader("Email Sent!")
             
-            # Display summary
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Emails", results["total_emails"])
-            with col2:
-                st.metric("Successful Sends", results["successful_sends"])
-            with col3:
-                st.metric("Failed Sends", results["failed_sends"])
-            
-            # Display results file location
-            st.info(f"Detailed results saved to: {results['results_file']}")
-            
-            # Add a button to view detailed results
-            if st.button("View Detailed Results"):
-                try:
-                    with open(results["results_file"], 'r') as f:
-                        detailed_results = json.load(f)
-                        st.json(detailed_results)
-                except Exception as e:
-                    st.error(f"Error loading detailed results: {str(e)}")
+            # Display only total emails
+            st.metric("Total Emails", results["total_emails"])
             
             # Add a button to reset the email sending state
             if st.button("Reset Email Sending"):
