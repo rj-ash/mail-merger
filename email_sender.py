@@ -9,7 +9,7 @@ import logging
 
 class EmailSender:
     def __init__(self, batch_size: int = 5):
-        self.api_endpoint = "http://localhost:8000/send-emails"
+        self.api_endpoint = "https://smtp-rajs.onrender.com/send-emails"
         self.batch_size = batch_size
         self.results_dir = "email_results"
         self.logger = logging.getLogger(__name__)
