@@ -1,656 +1,305 @@
 import streamlit as st
 import pandas as pd
-from people_search import get_people_search_results
-from people_enrich import get_people_data
-from mail_generation import EmailGenerationPipeline
-from email_sender import EmailSender, prepare_email_payloads
-import time
+from data_loader import DataLoader
+from mail_generation import MailGenerator
+from email_sender import EmailSender
 import asyncio
 import json
-import PyPDF2
-import io
-import dotenv
-
-# Load environment variables
-dotenv.load_dotenv()
+import os
+from datetime import datetime
 
 # Set page config
-st.set_page_config(page_title="Apollo.io People Pipeline", layout="wide")
+st.set_page_config(
+    page_title="Mail Merge Application",
+    page_icon="✉️",
+    layout="wide"
+)
 
-# Initialize session state for storing search results and enrichment data
-if 'search_results' not in st.session_state:
-    st.session_state.search_results = None
-if 'enriched_data' not in st.session_state:
-    st.session_state.enriched_data = None
-if 'search_completed' not in st.session_state:
-    st.session_state.search_completed = False
-if 'enrichment_completed' not in st.session_state:
-    st.session_state.enrichment_completed = False
-if 'product_details' not in st.session_state:
-    st.session_state.product_details = None
-if 'mail_generation_completed' not in st.session_state:
-    st.session_state.mail_generation_completed = False
+# Initialize session state
+if 'data_loader' not in st.session_state:
+    st.session_state.data_loader = DataLoader()
+if 'mail_generator' not in st.session_state:
+    st.session_state.mail_generator = MailGenerator()
+if 'email_sender' not in st.session_state:
+    st.session_state.email_sender = EmailSender()
+if 'df' not in st.session_state:
+    st.session_state.df = None
 if 'generated_emails' not in st.session_state:
-    st.session_state.generated_emails = []
-if 'email_sending_completed' not in st.session_state:
-    st.session_state.email_sending_completed = False
-if 'email_sending_results' not in st.session_state:
-    st.session_state.email_sending_results = None
+    st.session_state.generated_emails = None
+if 'sending_results' not in st.session_state:
+    st.session_state.sending_results = None
+if 'show_preview' not in st.session_state:
+    st.session_state.show_preview = False
 
-# Create tabs for different stages
-tab1, tab2, tab3, tab4 = st.tabs(["People Search", "People Enrichment", "Mail Generation", "Send Emails"])
+def download_csv(df: pd.DataFrame, filename: str):
+    """Helper function to create a download button for DataFrames."""
+    csv = df.to_csv(index=False)
+    st.download_button(
+        label=f"Download {filename} as CSV",
+        data=csv,
+        file_name=filename,
+        mime="text/csv"
+    )
+
+# Create tabs
+tab1, tab2, tab3 = st.tabs(["📊 Data Loading", "✍️ Email Generation", "📤 Email Sending"])
 
 with tab1:
-    st.title("Apollo.io People Search")
-    st.write("Search for people using Apollo.io API")
-
-    # Create input fields for search
-    with st.form("search_form"):
-        st.subheader("Search Criteria")
-        titles_input = st.text_input(
-            "Job Titles (comma-separated)",
-            value="Partner, Investor",
-            help="Enter job titles separated by commas"
+    st.title("Data Loading")
+    st.write("Upload your CSV or Excel file containing lead information.")
+    
+    # Show preview of current data if available
+    if st.session_state.df is not None:
+        st.subheader("Current Data Preview")
+        st.dataframe(
+            st.session_state.df,
+            use_container_width=True
         )
-        
-        # Add include similar titles checkbox
-        include_similar_titles = st.checkbox(
-            "Include Similar Titles",
-            value=False,
-            help="Include people with similar job titles in the search results"
-        )
-        
-        locations_input = st.text_input(
-            "Locations (comma-separated)",
-            value="India",
-            help="Enter locations separated by commas"
-        )
-        
-        industries_input = st.text_input(
-            "Industries (comma-separated)",
-            value="Venture Capital & Private Equity",
-            help="Enter industries separated by commas"
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            per_page = st.number_input("Results per page", min_value=1, max_value=100, value=5)
-        with col2:
-            page = st.number_input("Page number", min_value=1, value=1)
-        
-        submitted = st.form_submit_button("Search")
-
-    if submitted:
-        # Process inputs
-        titles = [title.strip() for title in titles_input.split(",")]
-        locations = [location.strip() for location in locations_input.split(",")]
-        industries = [industry.strip() for industry in industries_input.split(",")]
-        
-        with st.spinner("Searching..."):
-            results = get_people_search_results(
-                person_titles=titles,
-                include_similar_titles=include_similar_titles,
-                person_locations=locations,
-                company_locations=locations,
-                company_industries=industries,
-                per_page=per_page,
-                page=page
+        download_csv(st.session_state.df, "current_data.csv")
+    
+    uploaded_file = st.file_uploader(
+        "Choose a file",
+        type=['csv', 'xlsx', 'xls'],
+        help="Upload a CSV or Excel file containing lead information. The file must have an 'email_id' column."
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Save the uploaded file temporarily
+            file_path = f"temp_{uploaded_file.name}"
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+            
+            # Load the file
+            df = st.session_state.data_loader.load_file(file_path)
+            st.session_state.df = df
+            
+            # Display the data
+            st.subheader("Preview of Loaded Data")
+            st.dataframe(
+                df,
+                use_container_width=True
             )
             
-            if results:
-                # Store results in session state
-                st.session_state.search_results = results
-                st.session_state.search_completed = True
-                
-                # Convert results to DataFrame for display
-                df = pd.DataFrame(results)
-                column_order = ['id', 'name', 'title', 'company', 'email', 'email_status', 
-                              'linkedin_url', 'location', 'page_number']
-                df = df[column_order]
-                
-                st.subheader("Search Results")
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    column_config={
-                        "id": st.column_config.TextColumn("Lead ID", width="medium"),
-                        "name": st.column_config.TextColumn("Name", width="medium"),
-                        "title": st.column_config.TextColumn("Title", width="medium"),
-                        "company": st.column_config.TextColumn("Company", width="medium"),
-                        "email": st.column_config.TextColumn("Email", width="medium"),
-                        "email_status": st.column_config.TextColumn("Email Status", width="small"),
-                        "linkedin_url": st.column_config.LinkColumn("LinkedIn", width="medium"),
-                        "location": st.column_config.TextColumn("Location", width="medium"),
-                        "page_number": st.column_config.NumberColumn("Page", width="small")
-                    }
-                )
-                
-                # Download button for search results
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Download Search Results as CSV",
-                    data=csv,
-                    file_name="apollo_search_results.csv",
-                    mime="text/csv"
-                )
-                
-                st.write(f"Total results: {len(results)}")
-                st.success("Search completed! Proceed to the Enrichment tab to enrich these profiles.")
-            else:
-                st.warning("No results found. Try adjusting your search criteria.")
+            # Download button for loaded data
+            download_csv(df, f"loaded_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            
+            # Display data statistics
+            st.subheader("Data Statistics")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Leads", len(df))
+            with col2:
+                st.metric("Columns", len(df.columns))
+            with col3:
+                st.metric("Valid Emails", df['email_id'].notna().sum())
+            
+            # Display available columns
+            st.subheader("Available Columns for Email Templates")
+            st.write("You can use these column names as placeholders in your email templates using {column_name} format.")
+            st.code(", ".join(df.columns), language="text")
+            
+            # Clean up temporary file
+            os.remove(file_path)
+            
+            st.success("Data loaded successfully! Proceed to the Email Generation tab.")
+            
+        except Exception as e:
+            st.error(f"Error loading file: {str(e)}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
 with tab2:
-    st.title("People Enrichment")
+    st.title("Email Generation")
     
-    if not st.session_state.search_completed:
-        st.warning("Please complete the search first to get lead IDs for enrichment.")
+    if st.session_state.df is None:
+        st.warning("Please load your data first in the Data Loading tab.")
     else:
-        if not st.session_state.enrichment_completed:
-            if st.button("Start Enrichment"):
-                # Get all lead IDs from search results
-                lead_ids = [result['id'] for result in st.session_state.search_results]
+        # Show preview of current data
+        with st.expander("View Current Data", expanded=False):
+            st.dataframe(st.session_state.df, use_container_width=True)
+            download_csv(st.session_state.df, "current_data_for_templates.csv")
+        
+        # Email template input
+        with st.form("email_template_form"):
+            subject_template = st.text_input(
+                "Email Subject Template",
+                help="Use {column_name} for placeholders. Example: 'Hello {name}, interested in {company}'"
+            )
+            
+            body_template = st.text_area(
+                "Email Body Template",
+                height=300,
+                help="Use {column_name} for placeholders. Example: 'Dear {name}, I hope this email finds you well...'"
+            )
+            
+            preview_row = st.number_input(
+                "Preview Row Number",
+                min_value=0,
+                max_value=len(st.session_state.df) - 1,
+                value=0,
+                help="Select a row number to preview the generated email"
+            )
+            
+            submitted = st.form_submit_button("Generate Emails")
+        
+        # Handle form submission outside the form
+        if submitted and subject_template and body_template:
+            try:
+                # Set templates
+                st.session_state.mail_generator.set_dataframe(st.session_state.df)
+                st.session_state.mail_generator.set_templates(subject_template, body_template)
                 
-                # Process in batches of 10
-                batch_size = 10
-                enriched_data = []
+                # Generate emails
+                generated_df = st.session_state.mail_generator.generate_emails()
+                st.session_state.generated_emails = generated_df
+                st.session_state.show_preview = True
                 
+                # Preview
+                preview = st.session_state.mail_generator.preview_email(preview_row)
+                
+                st.subheader("Email Preview")
+                st.write("**Subject:**")
+                st.write(preview['subject'])
+                st.write("**Body:**")
+                st.write(preview['body'])
+                
+                st.success("Emails generated successfully! Proceed to the Email Sending tab.")
+                
+            except Exception as e:
+                st.error(f"Error generating emails: {str(e)}")
+        
+        # Show preview and download options outside the form
+        if st.session_state.show_preview and st.session_state.generated_emails is not None:
+            st.subheader("Preview of Generated Emails")
+            preview_df = st.session_state.generated_emails[['email_id', 'email_subject', 'email_body']].head()
+            st.dataframe(preview_df, use_container_width=True)
+            download_csv(st.session_state.generated_emails, f"generated_emails_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        
+        # Show preview of previously generated emails if available
+        elif st.session_state.generated_emails is not None:
+            st.subheader("Previously Generated Emails")
+            preview_df = st.session_state.generated_emails[['email_id', 'email_subject', 'email_body']].head()
+            st.dataframe(preview_df, use_container_width=True)
+            download_csv(st.session_state.generated_emails, "previously_generated_emails.csv")
+
+with tab3:
+    st.title("Email Sending")
+    
+    if st.session_state.generated_emails is None:
+        st.warning("Please generate emails first in the Email Generation tab.")
+    else:
+        # Show preview of emails to be sent
+        with st.expander("Preview Emails to be Sent", expanded=False):
+            preview_df = st.session_state.generated_emails[['email_id', 'email_subject', 'email_body']].head()
+            st.dataframe(preview_df, use_container_width=True)
+            download_csv(st.session_state.generated_emails, "emails_to_send.csv")
+        
+        # Display sending status
+        status = st.session_state.email_sender.get_sending_status(st.session_state.generated_emails)
+        
+        st.subheader("Sending Status")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Leads", status['total_leads'])
+        with col2:
+            st.metric("Valid Emails", status['valid_emails'])
+        with col3:
+            st.metric("Valid Subjects", status['valid_subjects'])
+        with col4:
+            st.metric("Ready to Send", status['ready_to_send'])
+        
+        # Sending controls
+        st.subheader("Send Emails")
+        
+        # Use a unique key for the send button
+        send_button = st.button("Start Sending", key="send_emails_button", disabled=status['ready_to_send'] == 0)
+        
+        if send_button:
+            try:
+                # Create a progress bar
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                for i in range(0, len(lead_ids), batch_size):
-                    batch = lead_ids[i:i + batch_size]
-                    status_text.text(f"Processing batch {i//batch_size + 1} of {(len(lead_ids) + batch_size - 1)//batch_size}")
-                    
-                    # Get enriched data for batch
-                    batch_df = get_people_data(batch)
-                    if not batch_df.empty:
-                        enriched_data.append(batch_df)
-                    
-                    # Update progress
-                    progress = min((i + batch_size) / len(lead_ids), 1.0)
-                    progress_bar.progress(progress)
-                    
-                    # Add a small delay to avoid rate limiting
-                    time.sleep(1)
+                # Send emails
+                async def send_emails():
+                    results = await st.session_state.email_sender.send_emails(st.session_state.generated_emails)
+                    st.session_state.sending_results = results
+                    return results
                 
-                # Combine all batch results
-                if enriched_data:
-                    final_df = pd.concat(enriched_data, ignore_index=True)
-                    st.session_state.enriched_data = final_df
-                    st.session_state.enrichment_completed = True
-                    
-                    # Clear progress indicators
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    st.success("Enrichment completed!")
-                else:
-                    st.error("No data was enriched. Please try again.")
-        
-        # Display enriched data if available
-        if st.session_state.enrichment_completed and st.session_state.enriched_data is not None:
-            st.subheader("Enriched Data")
-            st.dataframe(
-                st.session_state.enriched_data,
-                use_container_width=True,
-                column_config={
-                    "name": st.column_config.TextColumn("Name", width="medium"),
-                    "linkedin_url": st.column_config.LinkColumn("LinkedIn", width="medium"),
-                    "title": st.column_config.TextColumn("Title", width="medium"),
-                    "email_status": st.column_config.TextColumn("Email Status", width="small"),
-                    "email": st.column_config.TextColumn("Email", width="medium"),
-                    "organization": st.column_config.TextColumn("Organization", width="medium"),
-                    "company_industry": st.column_config.TextColumn("Industry", width="medium"),
-                    "company_keywords": st.column_config.TextColumn("Keywords", width="large"),
-                    "company_website": st.column_config.LinkColumn("Website", width="medium"),
-                    "company_linkedin": st.column_config.LinkColumn("Company LinkedIn", width="medium"),
-                    "company_twitter": st.column_config.LinkColumn("Twitter", width="medium"),
-                    "company_facebook": st.column_config.LinkColumn("Facebook", width="medium"),
-                    "company_angellist": st.column_config.LinkColumn("AngelList", width="medium"),
-                    "company_size": st.column_config.NumberColumn("Company Size", width="small"),
-                    "company_founded_year": st.column_config.NumberColumn("Founded Year", width="small"),
-                    "company_location": st.column_config.TextColumn("Location", width="medium"),
-                    "education": st.column_config.TextColumn("Education", width="large"),
-                    "experience": st.column_config.TextColumn("Experience", width="large")
-                }
-            )
-            
-            # Download button for enriched data
-            csv = st.session_state.enriched_data.to_csv(index=False)
-            st.download_button(
-                label="Download Enriched Data as CSV",
-                data=csv,
-                file_name="apollo_enriched_data.csv",
-                mime="text/csv"
-            )
-
-with tab3:
-    st.title("Mail Generation")
-    
-    # Add file upload section for direct processing
-    st.subheader("Upload Leads Data (Optional)")
-    
-    # Add template download button
-    template_data = pd.DataFrame({
-        'lead_id': ['example_id_1', 'example_id_2'],
-        'name': ['John Doe', 'Jane Smith'],
-        'title': ['CEO', 'CTO'],
-        'organization': ['Tech Corp', 'Innovation Inc'],
-        'headline': ['Technology Leader', 'Software Expert'],
-        'education': ['MBA, Computer Science', 'PhD, Engineering'],
-        'company_industry': ['Technology', 'Software'],
-        'email': ['john@example.com', 'jane@example.com'],
-        'linkedin_url': ['https://linkedin.com/in/johndoe', 'https://linkedin.com/in/janesmith'],
-        'email_status': ['verified', 'verified'],
-        'company_keywords': ['AI, ML', 'Cloud, DevOps'],
-        'company_website': ['https://techcorp.com', 'https://innovationinc.com'],
-        'company_linkedin': ['https://linkedin.com/company/techcorp', 'https://linkedin.com/company/innovationinc'],
-        'company_twitter': ['https://twitter.com/techcorp', 'https://twitter.com/innovationinc'],
-        'company_facebook': ['https://facebook.com/techcorp', 'https://facebook.com/innovationinc'],
-        'company_angellist': ['https://angel.co/techcorp', 'https://angel.co/innovationinc'],
-        'company_size': [100, 200],
-        'company_founded_year': [2010, 2015],
-        'company_location': ['San Francisco, CA, USA', 'New York, NY, USA'],
-        'experience': ['CEO at Tech Corp', 'CTO at Innovation Inc']
-    })
-    csv = template_data.to_csv(index=False)
-    st.download_button(
-        label="Download Template CSV",
-        data=csv,
-        file_name="leads_template.csv",
-        mime="text/csv",
-        help="Download a template CSV file with the required columns"
-    )
-    
-    uploaded_leads_file = st.file_uploader("Upload Leads Data (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
-    
-    if uploaded_leads_file is not None:
-        try:
-            # Read the uploaded file
-            if uploaded_leads_file.name.endswith('.csv'):
-                leads_df = pd.read_csv(uploaded_leads_file)
-            else:  # Excel file
-                leads_df = pd.read_excel(uploaded_leads_file)
-            
-            # Validate required columns
-            required_columns = ['lead_id', 'name', 'title', 'organization', 'headline', 'education', 'company_industry', 'email']
-            missing_columns = [col for col in required_columns if col not in leads_df.columns]
-            
-            if missing_columns:
-                st.error(f"Missing required columns: {', '.join(missing_columns)}")
-            else:
-                # Store the uploaded data in session state
-                st.session_state.enriched_data = leads_df
-                st.session_state.enrichment_completed = True
-                st.success("Leads data uploaded successfully!")
+                # Run the async function
+                results = asyncio.run(send_emails())
                 
-                # Show preview of the data
-                with st.expander("Preview Uploaded Data"):
-                    st.dataframe(leads_df.head())
-        except Exception as e:
-            st.error(f"Error processing file: {str(e)}")
-    
-    if not st.session_state.enrichment_completed:
-        st.warning("Please either complete the enrichment process or upload a leads data file to generate emails.")
-    else:
-        # Product Details Upload Section
-        st.subheader("Product Information")
-        uploaded_file = st.file_uploader("Upload Product Document (PDF)", type=['pdf'])
-        
-        if uploaded_file is not None:
-            try:
-                # Read PDF content
-                pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded_file.read()))
-                product_text = ""
-                for page in pdf_reader.pages:
-                    product_text += page.extract_text()
+                # Update progress
+                progress_bar.progress(1.0)
+                status_text.text("Sending completed!")
                 
-                # Store product details in session state
-                st.session_state.product_details = product_text
-                st.success("Product document processed successfully!")
+                # Display results
+                st.subheader("Sending Results")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Emails", results['total_emails'])
+                with col2:
+                    st.metric("Successful", results['successful'])
                 
-                # Show preview
-                with st.expander("Preview Product Details"):
-                    st.text_area("Extracted Text", product_text, height=200)
-            except Exception as e:
-                st.error(f"Error processing PDF: {str(e)}")
-        
-        # Mail Generation Section
-        if st.session_state.product_details:
-            # Add configuration options
-            st.subheader("Email Generation Configuration")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                batch_size = st.number_input("Batch Size", min_value=1, max_value=100, value=10)
-            with col2:
-                max_retries = st.number_input("Max Retries", min_value=1, max_value=5, value=3)
-            with col3:
-                retry_delay = st.number_input("Retry Delay (seconds)", min_value=1, max_value=30, value=5)
-            
-            # Add resume option if there are previous results
-            resume_generation = False
-            if st.session_state.generated_emails:
-                resume_generation = st.checkbox("Resume previous generation", 
-                    help="Continue from where the previous generation left off")
-            
-            if st.button("Generate Emails") or (resume_generation and st.button("Resume Generation")):
-                # Initialize loading state
-                loading_placeholder = st.empty()
-                status_placeholder = st.empty()
-                progress_placeholder = st.empty()
+                if results['failed'] > 0:
+                    st.warning(f"Failed to send {results['failed']} emails. Check the error log for details.")
+                    with st.expander("Error Log"):
+                        for error in results['errors']:
+                            st.error(error)
                 
-                try:
-                    # Show initial loading state
-                    with loading_placeholder.container():
-                        st.spinner("Preparing email generation...")
-                    
-                    # Prepare payloads for mail generation
-                    enriched_df = st.session_state.enriched_data
-                    
-                    # Update status
-                    status_placeholder.text("Validating data...")
-                    
-                    # Validate required columns
-                    required_columns = ['lead_id', 'name', 'title', 'organization', 'headline', 'education', 'company_industry']
-                    missing_columns = [col for col in required_columns if col not in enriched_df.columns]
-                    
-                    if missing_columns:
-                        st.error(f"Missing required columns in data: {', '.join(missing_columns)}")
-                        st.stop()
-                    
-                    # Update status
-                    status_placeholder.text("Cleaning and preparing data...")
-                    
-                    # Clean and prepare the data
-                    enriched_df = enriched_df.fillna('N/A')  # Replace NaN with 'N/A'
-                    
-                    # Convert all string columns to string type and strip whitespace
-                    string_columns = ['name', 'title', 'organization', 'headline', 'education', 'company_industry']
-                    for col in string_columns:
-                        if col in enriched_df.columns:
-                            enriched_df[col] = enriched_df[col].astype(str).str.strip()
-                    
-                    # Update status
-                    status_placeholder.text("Creating email payloads...")
-                    
-                    all_payloads = []
-                    skipped_leads = []
-                    
-                    for _, row in enriched_df.iterrows():
-                        try:
-                            # Validate required fields
-                            if not row['lead_id'] or row['lead_id'] == 'N/A':
-                                skipped_leads.append(f"{row['name']} (Missing lead_id)")
-                                continue
-                                
-                            if not row['name'] or row['name'] == 'N/A':
-                                skipped_leads.append(f"Lead ID: {row['lead_id']} (Missing name)")
-                                continue
-                            
-                            # Combine title, organization, and headline for experience
-                            experience_parts = []
-                            if row['title'] != 'N/A':
-                                experience_parts.append(f"Title: {row['title']}")
-                            if row['organization'] != 'N/A':
-                                experience_parts.append(f"Organization: {row['organization']}")
-                            if row['headline'] != 'N/A':
-                                experience_parts.append(f"Headline: {row['headline']}")
-                            combined_experience = ' | '.join(experience_parts) if experience_parts else 'N/A'
-                            
-                            # Prepare the payload with proper validation
-                            payload = {
-                                "lead": {
-                                    "lead_id": str(row['lead_id']).strip(),
-                                    "name": str(row['name']).strip(),
-                                    "experience": combined_experience,
-                                    "education": str(row['education']).strip(),
-                                    "company": str(row['organization']).strip(),
-                                    "company_overview": 'N/A',
-                                    "company_industry": str(row['company_industry']).strip()
-                                },
-                                "product": {
-                                    "details": st.session_state.product_details.strip()
-                                }
-                            }
-                            
-                            # Validate payload structure
-                            if not all(payload['lead'].values()):
-                                skipped_leads.append(f"{row['name']} (Empty required fields)")
-                                continue
-                                
-                            all_payloads.append(payload)
-                            
-                        except Exception as e:
-                            skipped_leads.append(f"{row.get('name', 'Unknown')} (Error: {str(e)})")
-                            continue
-                    
-                    if skipped_leads:
-                        st.warning(f"Skipped {len(skipped_leads)} leads due to missing or invalid data:")
-                        with st.expander("View Skipped Leads"):
-                            for lead in skipped_leads:
-                                st.write(f"- {lead}")
-                    
-                    if not all_payloads:
-                        st.error("No valid leads to process after validation. Please check your data.")
-                        st.stop()
-                    
-                    # Update status
-                    status_placeholder.text("Initializing email generation pipeline...")
-                    
-                    # Create and run pipeline with custom configuration
-                    pipeline = EmailGenerationPipeline(
-                        batch_size=batch_size,
-                        max_concurrent=5,
-                        max_retries=max_retries,
-                        retry_delay=retry_delay,
-                        timeout=60,  # Increased timeout
-                        save_interval=50
-                    )
-                    
-                    # Update status and show progress bar
-                    status_placeholder.text("Generating emails...")
-                    progress_bar = progress_placeholder.progress(0)
-                    
-                    # Create event loop for async execution
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    
-                    try:
-                        # Run the pipeline
-                        loop.run_until_complete(pipeline.process_all_leads(all_payloads))
-                        
-                        # Update generated emails list
-                        if resume_generation and st.session_state.generated_emails:
-                            # Combine previous and new results
-                            existing_results = {r["lead_id"]: r for r in st.session_state.generated_emails}
-                            new_results = {r["lead_id"]: r for r in pipeline.all_results}
-                            existing_results.update(new_results)
-                            st.session_state.generated_emails = list(existing_results.values())
-                        else:
-                            st.session_state.generated_emails = pipeline.all_results
-                            
-                        st.session_state.mail_generation_completed = True
-                        
-                        # Clear loading indicators
-                        loading_placeholder.empty()
-                        status_placeholder.empty()
-                        progress_placeholder.empty()
-                        
-                        # Show success message with statistics
-                        successful = len([r for r in st.session_state.generated_emails if r["status"] == "success"])
-                        failed = len([r for r in st.session_state.generated_emails if r["status"] == "failed"])
-                        st.success(f"Email generation completed! Successful: {successful}, Failed: {failed}")
-                        
-                        # Add option to retry failed emails
-                        if failed > 0:
-                            if st.button("Retry Failed Emails"):
-                                st.session_state.mail_generation_completed = False
-                                st.experimental_rerun()
-                                
-                    except Exception as e:
-                        st.error(f"Error during email generation: {str(e)}")
-                        # Save current progress
-                        if pipeline.all_results:
-                            st.session_state.generated_emails = pipeline.all_results
-                            st.warning("Progress has been saved. You can resume the generation later.")
-                    finally:
-                        loop.close()
-                        # Clear any remaining loading indicators
-                        loading_placeholder.empty()
-                        status_placeholder.empty()
-                        progress_placeholder.empty()
-                        
-                except Exception as e:
-                    st.error(f"Error during preparation: {str(e)}")
-                    # Clear any remaining loading indicators
-                    loading_placeholder.empty()
-                    status_placeholder.empty()
-                    progress_placeholder.empty()
-        
-        # Display generated emails if available
-        if st.session_state.mail_generation_completed and st.session_state.generated_emails:
-            st.subheader("Generated Emails")
-            
-            # Convert results to DataFrame for display
-            email_data = []
-            enriched_df = st.session_state.enriched_data  # Get reference to enriched data
-            
-            for result in st.session_state.generated_emails:
-                if result["status"] == "success" and result["final_result"]:
-                    # Get email from enriched data using lead_id
-                    lead_id = result["lead_id"]
-                    email = enriched_df[enriched_df['lead_id'] == lead_id]['email'].iloc[0] if not enriched_df[enriched_df['lead_id'] == lead_id].empty else 'N/A'
-                    
-                    email_data.append({
-                        "lead_id": result["lead_id"],
-                        "name": result["lead_name"],
-                        "organization": result["company"],
-                        "email": email,
-                        "subject": result["final_result"].get("subject", "N/A"),
-                        "body": result["final_result"].get("body", "N/A")
-                    })
-            
-            if email_data:
-                df = pd.DataFrame(email_data)
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    column_config={
-                        "lead_id": st.column_config.TextColumn("Lead ID", width="medium"),
-                        "name": st.column_config.TextColumn("Name", width="medium"),
-                        "organization": st.column_config.TextColumn("Organization", width="medium"),
-                        "email": st.column_config.TextColumn("Email", width="medium"),
-                        "subject": st.column_config.TextColumn("Subject", width="large"),
-                        "body": st.column_config.TextColumn("Body", width="xlarge")
-                    }
-                )
+                # Download results
+                results_file = f"email_results_{results['timestamp']}.json"
+                with open(os.path.join("email_results", results_file), 'r') as f:
+                    results_json = f.read()
                 
-                # Download button for generated emails
-                csv = df.to_csv(index=False)
                 st.download_button(
-                    label="Download Generated Emails as CSV",
-                    data=csv,
-                    file_name="generated_emails.csv",
-                    mime="text/csv"
+                    label="Download Sending Results (JSON)",
+                    data=results_json,
+                    file_name=results_file,
+                    mime="application/json"
                 )
-            else:
-                st.warning("No emails were successfully generated.")
-
-with tab4:
-    st.title("Send Emails")
-    
-    if not st.session_state.mail_generation_completed:
-        st.warning("Please complete the mail generation step first.")
-    else:
-        if not st.session_state.email_sending_completed:
-            st.subheader("Email Sending Configuration")
-            
-            batch_size = st.number_input(
-                "Batch Size",
-                min_value=1,
-                max_value=10,
-                value=5,
-                help="Number of emails to send in each batch"
-            )
-            
-            if st.button("Start Sending Emails"):
-                if not st.session_state.generated_emails:
-                    st.error("No emails have been generated. Please go back to the Mail Generation tab.")
-                else:
-                    # Prepare email payloads with enriched data
-                    email_payloads = prepare_email_payloads(
-                        st.session_state.generated_emails,
-                        st.session_state.enriched_data
-                    )
-                    
-                    if not email_payloads:
-                        st.error("No valid email payloads to send.")
-                    else:
-                        # Initialize email sender
-                        sender = EmailSender(batch_size=batch_size)
-                        
-                        # Create progress bar
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        # Send emails
-                        status_text.text("Sending emails...")
-                        
-                        try:
-                            # Run the async email sending process
-                            results = asyncio.run(sender.send_emails(email_payloads))
-                            
-                            # Update session state
-                            st.session_state.email_sending_completed = True
-                            st.session_state.email_sending_results = results
-                            
-                            # Clear progress indicators
-                            progress_bar.empty()
-                            status_text.empty()
-                            
-                            st.success("Email sending completed!")
-                        except Exception as e:
-                            st.error(f"Error sending emails: {str(e)}")
+                
+                # Create and download a summary CSV
+                summary_df = pd.DataFrame({
+                    'timestamp': [results['timestamp']],
+                    'total_emails': [results['total_emails']],
+                    'successful': [results['successful']],
+                    'failed': [results['failed']]
+                })
+                download_csv(summary_df, f"email_sending_summary_{results['timestamp']}.csv")
+                
+            except Exception as e:
+                st.error(f"Error sending emails: {str(e)}")
+                progress_bar.empty()
+                status_text.empty()
         
-        # Display results if available
-        if st.session_state.email_sending_completed and st.session_state.email_sending_results:
-            results = st.session_state.email_sending_results
+        # Show previous sending results if available
+        if st.session_state.sending_results is not None:
+            st.subheader("Previous Sending Results")
+            results = st.session_state.sending_results
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Emails", results['total_emails'])
+            with col2:
+                st.metric("Successful", results['successful'])
             
-            st.subheader("Email Sent!")
+            if results['failed'] > 0:
+                with st.expander("Previous Error Log"):
+                    for error in results['errors']:
+                        st.error(error)
             
-            # Display only total emails
-            st.metric("Total Emails", results["total_emails"])
-            
-            # Add a button to reset the email sending state
-            if st.button("Reset Email Sending"):
-                st.session_state.email_sending_completed = False
-                st.session_state.email_sending_results = None
-                st.experimental_rerun()
-
-# Update pipeline information
-with st.expander("Pipeline Information"):
-    st.write("""
-    This pipeline consists of three stages:
-    
-    1. **People Search**
-       - Search for people using job titles, locations, and industries
-       - Results include basic profile information
-       - Download search results as CSV
-    
-    2. **People Enrichment**
-       - Enrich the found profiles with additional data
-       - Process lead IDs in batches of 10
-       - Get detailed information including industry and keywords
-       - Download enriched data as CSV
-    
-    3. **Mail Generation**
-       - Upload product information document
-       - Generate personalized emails for each lead
-       - View and download generated emails
-       - Process leads in batches with retry logic
-    
-    Note: Each stage must be completed in sequence. The enrichment and mail generation processes may take some time as they process profiles in batches.
-    """)
+            # Download previous results
+            results_file = f"email_results_{results['timestamp']}.json"
+            if os.path.exists(os.path.join("email_results", results_file)):
+                with open(os.path.join("email_results", results_file), 'r') as f:
+                    results_json = f.read()
+                st.download_button(
+                    label="Download Previous Results (JSON)",
+                    data=results_json,
+                    file_name=results_file,
+                    mime="application/json"
+                )
 
 
 
