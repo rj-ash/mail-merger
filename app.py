@@ -44,7 +44,7 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     st.session_state.login_attempts = 0
                     st.success("Login successful!")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.session_state.login_attempts += 1
                     if st.session_state.login_attempts >= 3:
@@ -70,7 +70,7 @@ if not st.session_state.authenticated:
         if st.sidebar.button("Logout"):
             st.session_state.authenticated = False
             st.session_state.login_attempts = 0
-            st.experimental_rerun()
+            st.rerun()
 
 # Main application
 if st.session_state.authenticated:
@@ -78,7 +78,7 @@ if st.session_state.authenticated:
     if st.sidebar.button("Logout"):
         st.session_state.authenticated = False
         st.session_state.login_attempts = 0
-        st.experimental_rerun()
+        st.rerun()
     
     # Initialize other session state variables
     if 'data_loader' not in st.session_state:
