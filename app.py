@@ -312,28 +312,7 @@ if st.session_state.authenticated:
                         with st.expander("Error Log"):
                             for error in results['errors']:
                                 st.error(error)
-                    
-                    # Download results
-                    results_file = f"email_results_{results['timestamp']}.json"
-                    with open(os.path.join("email_results", results_file), 'r') as f:
-                        results_json = f.read()
-                    
-                    st.download_button(
-                        label="Download Sending Results (JSON)",
-                        data=results_json,
-                        file_name=results_file,
-                        mime="application/json"
-                    )
-                    
-                    # Create and download a summary CSV
-                    summary_df = pd.DataFrame({
-                        'timestamp': [results['timestamp']],
-                        'total_emails': [results['total_emails']],
-                        'successful': [results['successful']],
-                        'failed': [results['failed']]
-                    })
-                    download_csv(summary_df, f"email_sending_summary_{results['timestamp']}.csv")
-                    
+                
                 except Exception as e:
                     st.error(f"Error sending emails: {str(e)}")
                     progress_bar.empty()
@@ -353,18 +332,6 @@ if st.session_state.authenticated:
                     with st.expander("Previous Error Log"):
                         for error in results['errors']:
                             st.error(error)
-                
-                # Download previous results
-                results_file = f"email_results_{results['timestamp']}.json"
-                if os.path.exists(os.path.join("email_results", results_file)):
-                    with open(os.path.join("email_results", results_file), 'r') as f:
-                        results_json = f.read()
-                    st.download_button(
-                        label="Download Previous Results (JSON)",
-                        data=results_json,
-                        file_name=results_file,
-                        mime="application/json"
-                    )
 
 
 
